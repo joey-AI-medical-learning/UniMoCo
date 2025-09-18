@@ -28,7 +28,7 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('-batch_size', '--batch_size', default=1, type=int, help='Batch size')
 parser.add_argument('--datapath', default='/data', type=str)
-parser.add_argument('--dataname', default='ucsf_pdgm', type=str)
+parser.add_argument('--dataname', default='', type=str)
 parser.add_argument('--savepath', default='', type=str)
 parser.add_argument('--resume', default=None, type=str)
 parser.add_argument('--pretrain', default=None, type=str)
@@ -90,8 +90,8 @@ def main():
     class_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     if args.dataname in ['BRATS2020', 'BRATS2015', 'ucsf_pdgm']:
-        train_file = ''
-        test_file = ''
+        train_file = 'IDH_Train.xlsx'
+        test_file = 'IDH_Test.xlsx'
 
     logging.info(str(args))
 
