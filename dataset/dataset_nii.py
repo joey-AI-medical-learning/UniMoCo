@@ -22,8 +22,8 @@ class BraTS_load_all_train_nii_class(Dataset):
         df = pd.read_excel(data_file_path)
 
         self.names = df["patient_id"].tolist()
-        # self.class_labels = df["class_who"].tolist()
-        self.class_labels = df["is_IDH_muted"].tolist()
+        # self.class_labels = df["WHO"].tolist()
+        self.class_labels = df["IDH"].tolist()
 
         self.volpaths = [os.path.join(root, 'vol', name + '_vol.npy') for name in self.names]
         self.transforms = eval(transforms or 'Identity()')
