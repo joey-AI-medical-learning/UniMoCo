@@ -1,9 +1,13 @@
+from pkgutil import get_loader
+
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.init import xavier_uniform_, constant_
 import torch
 import numpy as np
-
+import math
 from .layers import general_conv3d_prenorm, fusion_prenorm
+
 
 
 basic_dims = 8
@@ -41,20 +45,20 @@ class Encoder(nn.Module):
         self.e5_c3 = general_conv3d_prenorm(basic_dims * 16, basic_dims * 16)
 
     def forward(self, x):
-        x1 = self.e1_c1(x)
-        x1 = x1 + self.e1_c3(self.e1_c2(x1))
+        x1 = self.e1_c1(x)  # torch.Size([1, 8, 128, 128, 128])
+        x1 = x1 + self.e1_c3(self.e1_c2(x1))  # torch.Size([1, 8, 128, 128, 128])
 
-        x2 = self.e2_c1(x1)
-        x2 = x2 + self.e2_c3(self.e2_c2(x2))
+        x2 = self.e2_c1(x1)  # torch.Size([1, 16, 64, 64, 64])
+        x2 = x2 + self.e2_c3(self.e2_c2(x2))  # torch.Size([1, 16, 64, 64, 64])
 
-        x3 = self.e3_c1(x2)
-        x3 = x3 + self.e3_c3(self.e3_c2(x3))
+        x3 = self.e3_c1(x2)  # torch.Size([1, 32, 32, 32, 32])
+        x3 = x3 + self.e3_c3(self.e3_c2(x3))  # torch.Size([1, 32, 32, 32, 32])
 
-        x4 = self.e4_c1(x3)
-        x4 = x4 + self.e4_c3(self.e4_c2(x4))
+        x4 = self.e4_c1(x3)  # torch.Size([1, 64, 16, 16, 16])
+        x4 = x4 + self.e4_c3(self.e4_c2(x4))  # torch.Size([1, 64, 16, 16, 16])
 
-        x5 = self.e5_c1(x4)
-        x5 = x5 + self.e5_c3(self.e5_c2(x5))
+        x5 = self.e5_c1(x4)  # torch.Size([1, 128, 8, 8, 8])
+        x5 = x5 + self.e5_c3(self.e5_c2(x5))  # torch.Size([1, 128, 8, 8, 8])
 
         return x1, x2, x3, x4, x5
 
@@ -220,10 +224,12 @@ class SelfAttention(nn.Module):
             qkv[0],
             qkv[1],
             qkv[2],
-        )
+        )  # make torchscript happy (cannot use tensor as tuple)
+
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
+
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -328,9 +334,9 @@ class MaskModal(nn.Module):
         return x
 
 
-class Feature_enhancement(nn.Module):
-    def __init__(self):
-        super(Feature_enhancement, self).__init__()
+class CNN_model(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super(CNN, self).__init__()
         self.global_avg_pool = nn.AvgPool3d(1)
 
     def forward(self, x):
@@ -339,26 +345,31 @@ class Feature_enhancement(nn.Module):
         return output
 
 
-class Simple4LayerEncoder(nn.Module):
+class class_network(nn.Module):
     def __init__(self, num_classes=2):
-        super(Simple4LayerEncoder, self).__init__()
+        super(class_network, self).__init__()
 
-        self.conv1 = nn.Conv3d(4, 32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm3d(32)
+        self.conv1 = nn.Conv3d(4, 16, kernel_size=3, padding=1)  # Input: 4 channels
+        self.bn1 = nn.BatchNorm3d(16)
 
-        self.conv2 = nn.Conv3d(32, 64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm3d(64)
+        self.conv2 = nn.Conv3d(16, 32, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm3d(32)
 
-        self.conv3 = nn.Conv3d(64, 128, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm3d(128)
+        self.conv3 = nn.Conv3d(32, 64, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm3d(64)
 
-        self.conv4 = nn.Conv3d(128, 256, kernel_size=3, padding=1)
-        self.bn4 = nn.BatchNorm3d(256)
+        self.conv4 = nn.Conv3d(64, 128, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm3d(128)
 
         self.maxpool = nn.MaxPool3d(kernel_size=2, stride=2)
 
-        self.fc1 = nn.Linear(256 * 8 * 8 * 8, 512)
-        self.fc2 = nn.Linear(512, num_classes)
+        self.max_pool_3d = nn.MaxPool3d(kernel_size=16, stride=1)
+        self.avg_pool_3d = nn.AvgPool3d(kernel_size=16, stride=1)
+
+        self.Hidder_layer_1 = nn.Linear(256, 128)
+        self.Hidder_layer_2 = nn.Linear(128, 32)
+        self.drop_layer = nn.Dropout(p=0.2)
+        self.classifier = nn.Linear(32, num_classes)
 
     def forward(self, x):
 
@@ -372,14 +383,20 @@ class Simple4LayerEncoder(nn.Module):
         x = self.maxpool(x)
 
         x = F.relu(self.bn4(self.conv4(x)))
-        x = self.maxpool(x)
 
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
+        x_avg = self.avg_pool_3d(x)
+        x_avg = x_avg.view(x_avg.size(0), -1)
+        x_max = self.max_pool_3d(x)
+        x_max = x_max.view(x_max.size(0), -1)
+
+        x = torch.cat([x_avg,x_max], dim=1)
+        x = self.drop_layer(x)
+        x = self.Hidder_layer_1(x)
+        x = self.Hidder_layer_2(x)
+
+        x = self.classifier(x)
 
         return x
-
 
 class Model(nn.Module):
     def __init__(self, num_cls=4):
@@ -408,14 +425,13 @@ class Model(nn.Module):
         self.t1ce_conv = nn.Conv3d(basic_dims * 16, transformer_basic_dims, kernel_size=1, stride=1, padding=0)
         self.t1_conv = nn.Conv3d(basic_dims * 16, transformer_basic_dims, kernel_size=1, stride=1, padding=0)
         self.t2_conv = nn.Conv3d(basic_dims * 16, transformer_basic_dims, kernel_size=1, stride=1, padding=0)
-
         self.multi_conv = nn.Conv3d(basic_dims * 256, transformer_basic_dims, kernel_size=1, stride=1, padding=0)
 
-        self.flair_att = Feature_enhancement()
-        self.t1ce_att = Feature_enhancement()
-        self.t1_att = Feature_enhancement()
-        self.t2_att = Feature_enhancement()
-        self.multi_att = Feature_enhancement()
+        self.flair_att = CNN_model(channel=512)
+        self.t1ce_att = CNN_model(channel=512)
+        self.t1_att = CNN_model(channel=512)
+        self.t2_att = CNN_model(channel=512)
+        self.multi_att = CNN_model(channel=512)
 
         self.flair_pos = nn.Parameter(torch.zeros(1, patch_size ** 3, transformer_basic_dims))
         self.t1ce_pos = nn.Parameter(torch.zeros(1, patch_size ** 3, transformer_basic_dims))
@@ -437,20 +453,17 @@ class Model(nn.Module):
                                                 kernel_size=1, padding=0)
 
         self.masker = MaskModal()
-
         self.decoder_fuse = Decoder_fuse(num_cls=num_cls)
         self.decoder_sep = Decoder_sep(num_cls=num_cls)
 
-        self.class_out_fuse = Simple4LayerEncoder()
+        self.class_out_fuse = class_network()
 
         self.is_training = False
-
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
                 torch.nn.init.kaiming_normal_(m.weight)  #
 
     def forward(self, x, mask):
-
         flair_x1, flair_x2, flair_x3, flair_x4, flair_x5 = self.flair_encoder(x[:, 0:1, :, :, :])
         t1ce_x1, t1ce_x2, t1ce_x3, t1ce_x4, t1ce_x5 = self.t1ce_encoder(x[:, 1:2, :, :, :])
         t1_x1, t1_x2, t1_x3, t1_x4, t1_x5 = self.t1_encoder(x[:, 2:3, :, :, :])
@@ -458,12 +471,16 @@ class Model(nn.Module):
 
         flair_x5_local = self.flair_conv(flair_x5)
         flair_x5_local = self.flair_att(flair_x5_local)
+
         t1ce_x5_local = self.t1ce_conv(t1ce_x5)
         t1ce_x5_local = self.t1ce_att(t1ce_x5_local)
+
         t1_x5_local = self.t1_conv(t1_x5)
         t1_x5_local = self.t1_att(t1_x5_local)
+
         t2_x5_local = self.t2_conv(t2_x5)
         t2_x5_local = self.t2_att(t2_x5_local)
+
 
         flair_token_x5 = self.flair_encode_conv(flair_x5).permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1,
                                                                                                    transformer_basic_dims)
@@ -491,6 +508,7 @@ class Model(nn.Module):
         t1ce_intra_x5 = t1ce_intra_x5 + t1ce_x5_local
         t1_intra_x5 = t1_intra_x5 + t1_x5_local
         t2_intra_x5 = t2_intra_x5 + t2_x5_local
+
 
         if self.is_training:
             flair_pred, kl_flair_spe = self.decoder_sep(flair_x1, flair_x2, flair_x3, flair_x4, flair_x5)
@@ -532,15 +550,14 @@ class Model(nn.Module):
         x5_intra_local = self.multi_att(x5_intra_local)
         x5_inter = multimodal_inter_x5 + x5_intra_local
 
-        fuse_pred, preds, kl_pred_fuse = self.decoder_fuse(x1, x2, x3, x4, x5_inter)
-
-
-        fuse_class_output = self.class_out_fuse.forward(fuse_pred)
+        out_pred, preds, kl_pred_fuse = self.decoder_fuse(x1, x2, x3, x4, x5_inter)
+        out_class_output = self.class_out_fuse.forward(out_pred)
 
         if self.is_training:
-            return fuse_pred, (flair_pred, t1ce_pred, t1_pred, t2_pred), preds, spe_out_kl, kl_pred_fuse, fuse_class_output
+            return out_pred, (flair_pred, t1ce_pred, t1_pred, t2_pred), preds, spe_out_kl, kl_pred_fuse, out_class_output
 
-        return fuse_pred, fuse_class_output
+        return out_pred, out_class_output
+
 
 
 if __name__ == "__main__":
@@ -548,3 +565,5 @@ if __name__ == "__main__":
     x = torch.rand(1, 4, 128, 128, 128)
     mask = torch.from_numpy(np.array([[True, False, False, False]])).detach()
     y1 = model(x, mask)
+    print(y1[0].shape)
+    print(y1[1].shape)
