@@ -87,13 +87,11 @@ def main():
     lr_schedule = LR_Scheduler(args.lr, args.num_epochs)
     train_params = [{'params': model.parameters(), 'lr': args.lr, 'weight_decay': args.weight_decay}]
     optimizer = torch.optim.Adam(train_params, betas=(0.9, 0.999), eps=1e-08, amsgrad=True)
-
     class_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
-    LabelSmoothing_loss = criterions.LabelSmoothingLoss()
 
     if args.dataname in ['BRATS2020', 'BRATS2015', 'ucsf_pdgm']:
-        train_file = 'WHO_Grade_train.xlsx'
-        test_file = 'WHO_Grade_test.xlsx'
+        train_file = 'WHO_Train.xlsx'
+        test_file = 'WHO_Test.xlsx'
 
     logging.info(str(args))
 
@@ -143,6 +141,7 @@ def main():
             mask = mask.to(device)
 
             model.module.is_training = True
+
             fuse_pred, sep_preds, prm_preds, spe_out_kl, kl_pred_fuse, fuse_class_output = model(x, mask)
 
             fuse_cross_loss = criterions.softmax_weighted_loss(fuse_pred, target, num_cls=num_cls)
@@ -174,14 +173,11 @@ def main():
                 kl_loss += weight_prm * criterions.temp_kl_loss_bs(kl_pred, kl_spe).to(device)
 
             fuse_class_cross_loss = class_loss(fuse_class_output, class_label)
-            fuse_class_labelsmooth_loss = LabelSmoothing_loss(fuse_class_output, class_label)
-            fuse_class_output_loss = fuse_class_cross_loss + fuse_class_labelsmooth_loss
-
 
             if epoch < args.region_fusion_start_epoch:
-                loss = fuse_loss * 0.0 + sep_loss + prm_loss + mse_loss + kl_loss + fuse_class_output_loss
+                loss = fuse_loss * 0.0 + sep_loss + prm_loss + mse_loss + kl_loss + fuse_class_cross_loss
             else:
-                loss = fuse_loss + sep_loss + prm_loss + mse_loss + kl_loss + fuse_class_output_loss
+                loss = fuse_loss + sep_loss + prm_loss + mse_loss + kl_loss + fuse_class_cross_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -197,7 +193,7 @@ def main():
             writer.add_scalar('mse_loss', mse_loss.item(), global_step=step)
             writer.add_scalar('kl_loss', kl_loss.item(), global_step=step)
             writer.add_scalar('fuse_class_cross_loss', fuse_class_cross_loss.item(), global_step=step)
-            writer.add_scalar('fuse_class_labelsmooth_loss', fuse_class_labelsmooth_loss.item(), global_step=step)
+
 
             msg = 'Epoch {}/{}, Iter {}/{}, Loss {:.4f}, '.format((epoch + 1), args.num_epochs, (i + 1), iter_per_epoch,
                                                                   loss.item())
@@ -206,10 +202,10 @@ def main():
             msg += 'prmcross:{:.4f}, prmdice:{:.4f}, '.format(prm_cross_loss.item(), prm_dice_loss.item())
             msg += 'mseloss:{:.4f}, '.format(mse_loss.item())
             msg += 'klloss:{:.4f}, '.format(kl_loss.item())
+
             msg += 'fuse_class_cross_loss:{:.4f}, '.format(
                 fuse_class_cross_loss.item())
-            msg += 'fuse_class_cross_loss:{:.4f}, fuse_class_labelsmooth_loss:{:.4f}, '.format(
-                fuse_class_cross_loss.item(), fuse_class_labelsmooth_loss.item())
+
             logging.info(msg)
         logging.info('train time per epoch: {}'.format(time.time() - b))
 
@@ -257,6 +253,7 @@ def main():
             test_precision_score.update(precision_score)
             test_recall_score.update(recall_score)
             test_f1_score.update(f1_score)
+
         logging.info('Avg Dice scores: {}'.format(test_dice_score.avg))
         logging.info('Avg Accuracy scores: {}'.format(test_accuracy_score.avg))
         logging.info('Avg Precision scores: {}'.format(test_precision_score.avg))
